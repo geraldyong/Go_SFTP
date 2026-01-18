@@ -1,95 +1,86 @@
-# SFTP Service Starter Kit (Go + Vault + Web UI + Helm)
+# Go_SFTP (Docker Compose)
 
-This repo provides a secure, Kubernetes-friendly SFTP service with:
-- **Go SFTP server** (`services/sftp-server`) supporting multiple users and per-user jailed roots.
-- **Admin API** (`services/admin-api`) to manage users and authorized keys stored in **HashiCorp Vault** KV.
-- **Web UI** (`services/web-ui`) minimal Next.js admin portal.
-- **Helm chart** (`helm/sftp-service`) to deploy into Kubernetes (multiple SFTP replicas).
+A small SFTP service you can run on a **single machine** using **Docker Compose**.
 
-## Key design points
-- **Public key authentication** (recommended default).
-- Each user is jailed to: `/data/<username>` (or `rootSubdir` if set in Vault record).
-- User cannot traverse outside their jail; symlink operations are denied.
-- Kubernetes SFTP replicas: Service load-balances **new TCP connections** across pods.
+It starts these containers:
+- **vault**: HashiCorp Vault (dev mode, for local/demo)
+- **admin-api**: HTTP API to manage SFTP users/keys stored in Vault
+- **web-ui**: minimal web admin portal (talks to admin-api)
+- **sftp-server**: Go SFTP server (public-key auth)
 
-## Vault data model
-Vault KV v2 is preferred. Default prefix: `kv/sftp/users`.
+> The included `docker-compose.yml` uses **Vault dev mode** with a fixed token (`root`).
+> This is convenient for local use, but **not production-safe**.
 
-User record at: `<prefix>/<username>` (e.g. `kv/sftp/users/alice`):
-```json
-{
-  "username": "alice",
-  "disabled": false,
-  "publicKeys": ["ssh-ed25519 AAAA... alice@laptop"],
-  "rootSubdir": "alice"
-}
-```
+---
 
-## Local dev quick start
-1) Run Vault dev:
+## Prerequisites
+- Docker + Docker Compose
+
+---
+
+## Quick start
+
+1) Clone the repo and start everything:
 ```bash
-vault server -dev -dev-root-token-id=root
-export VAULT_ADDR=http://127.0.0.1:8200
-export VAULT_TOKEN=root
+docker compose up -d --build
 ```
 
-2) Start admin-api:
+2) Verify containers:
 ```bash
-cd services/admin-api
-go run ./cmd/admin-api
+docker compose ps
 ```
 
-3) Create user in Vault:
-```bash
-curl -X POST http://localhost:8080/api/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{"username":"alice","publicKeys":["ssh-ed25519 AAAA... alice@laptop"]}'
-```
+3) A sample user is auto-created on first startup:
+- **username:** `alice`
+- **public key:** `./dev/*.pub` (first `*.pub` file found)
 
-4) Generate a host key for SFTP server:
-```bash
-ssh-keygen -t ed25519 -f /tmp/ssh_host_ed25519_key -N ""
-```
-
-5) Start sftp-server:
-```bash
-cd ../sftp-server
-mkdir -p /tmp/sftp-data
-LISTEN_ADDR=0.0.0.0:2022 \
-DATA_ROOT=/tmp/sftp-data \
-HOST_KEY_PATH=/tmp/ssh_host_ed25519_key \
-VAULT_ADDR=$VAULT_ADDR VAULT_TOKEN=$VAULT_TOKEN \
-VAULT_USERS_PREFIX=kv/sftp/users \
-go run ./cmd/sftp-server
-```
-
-6) Connect:
+4) Connect via SFTP (host port **2022**):
 ```bash
 sftp -P 2022 alice@127.0.0.1
 ```
+Use the matching private key from `./dev/` (for example: `./dev/alice`).
 
-## Kubernetes deployment
-Build and push images, then:
+---
+
+## Web UI and Admin API
+
+- **Web UI:** http://localhost:3000
+- **Admin API:** http://localhost:8080
+
+Example: create/update a user via API:
 ```bash
-helm upgrade --install sftp ./helm/sftp-service \
-  --set sftp.image.repository=yourrepo/sftp-server --set sftp.image.tag=0.1.0 \
-  --set adminApi.image.repository=yourrepo/admin-api --set adminApi.image.tag=0.1.0 \
-  --set webUi.image.repository=yourrepo/web-ui --set webUi.image.tag=0.1.0 \
-  --set adminApi.vault.tokenSecretName=vault-admin-token \
-  --set sftp.vault.addr=http://vault.vault.svc:8200 \
-  --set sftp.vault.tokenSecretName=vault-sftp-token \
-  --set sftp.hostKeySecret.name=sftp-hostkey
+curl -X POST http://localhost:8080/api/v1/users \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "bob",
+    "disabled": false,
+    "rootSubdir": "bob",
+    "publicKeys": ["ssh-ed25519 AAAA... bob@laptop"]
+  }'
 ```
 
-### Host key secret
-Create a Secret containing the **OpenSSH private key**:
+---
+
+## Data persistence
+
+Docker volumes are used:
+- `sftp-data`  -> user home directories under `/data/<username>` in the container
+- `sftp-keys`  -> SFTP **host key** (generated once and reused)
+
+To reset everything (including users and files):
 ```bash
-kubectl create secret generic sftp-hostkey \
-  --from-file=ssh_host_ed25519_key=/path/to/ssh_host_ed25519_key
+docker compose down -v
 ```
 
-## Security hardening checklist
-- Use Vault **Kubernetes auth + Vault Agent** in production (instead of long-lived tokens).
-- Apply **NetworkPolicy** restricting access to TCP/2022 and admin-api.
-- Use PSA restricted / Pod Security Standards.
-- Enable Vault audit logging and least-privilege policies.
+---
+
+## Configuration (compose defaults)
+
+Useful ports:
+- `2022/tcp`  SFTP
+- `9090/tcp`  SFTP server metrics
+- `3000/tcp`  Web UI
+- `8080/tcp`  Admin API
+- `8200/tcp`  Vault (dev)
+
+Most runtime settings are in `docker-compose.yml` under each service’s `environment:` section.
