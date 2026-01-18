@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-sftp
+  labels:
+    {{- include "sftp-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.sftp.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-sftp
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-sftp
+        {{- include "sftp-service.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+      containers:
+        - name: sftp
+          image: "{{ .Values.sftp.image.repository }}:{{ .Values.sftp.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:{{ .Values.sftp.service.port }}"
+            - name: DATA_ROOT
+              value: "{{ .Values.sftp.dataRoot }}"
+            - name: HOST_KEY_PATH
+              value: "/keys/ssh_host_ed25519_key"
+            - name: VAULT_ADDR
+              value: "{{ .Values.sftp.vault.addr }}"
+            - name: VAULT_USERS_PREFIX
+              value: "{{ .Values.sftp.vault.usersPrefix }}"
+          {{- if .Values.sftp.vault.tokenSecretName }}
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sftp.vault.tokenSecretName }}
+                  key: VAULT_TOKEN
+          {{- end }}
+          {{- if and .Values.sftp.vault.approle.roleIdSecretName .Values.sftp.vault.approle.secretIdSecretName }}
+            - name: VAULT_ROLE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sftp.vault.approle.roleIdSecretName }}
+                  key: VAULT_ROLE_ID
+            - name: VAULT_SECRET_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sftp.vault.approle.secretIdSecretName }}
+                  key: VAULT_SECRET_ID
+          {{- end }}
+          ports:
+            - name: sftp
+              containerPort: {{ .Values.sftp.service.port }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.sftp.dataRoot }}
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            tcpSocket:
+              port: sftp
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: sftp
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{ else }}{{ .Release.Name }}-data{{ end }}
+        - name: keys
+          secret:
+            secretName: {{ .Values.sftp.hostKeySecret.name }}
+        - name: tmp
+          emptyDir: {}

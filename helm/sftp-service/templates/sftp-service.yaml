@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-sftp
+  labels:
+    {{- include "sftp-service.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.sftp.service.type }}
+  selector:
+    app: {{ .Release.Name }}-sftp
+  ports:
+    - name: sftp
+      port: {{ .Values.sftp.service.port }}
+      targetPort: sftp

@@ -1,0 +1,26 @@
+SFTP Service installed.
+
+SFTP endpoint:
+  Service: {{ include "sftp-service.fullname" . }}
+  Port:    {{ .Values.service.port }}
+
+Metrics:
+  Enabled: {{ .Values.metrics.enabled }}
+  URL:     http://<pod-ip>:{{ .Values.metrics.port }}{{ .Values.metrics.path }}
+
+Host key secret:
+  {{ include "sftp-service.hostKeySecretName" . }}
+
+Data PVC:
+  {{ .Values.dataVolume.existingClaim }}
+
+Web UI:
+  web-ui:{{ .Values.webUi.service.port }}
+
+Admin API:
+  admin-api:{{ .Values.adminApi.service.port }}
+
+Required secrets:
+- Admin API Vault token secret: {{ .Values.adminApi.vault.tokenSecretName }} with key "VAULT_TOKEN"
+- For production, provide hostKey via an existing secret and mount an S3-backed PVC via CSI.
+- Use Vault Kubernetes auth (recommended) rather than a static token.

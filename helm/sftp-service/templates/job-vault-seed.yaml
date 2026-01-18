@@ -1,0 +1,49 @@
+{{- if .Values.vaultSeedJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sftp-service.fullname" . }}-vault-seed
+  labels:
+    {{- include "sftp-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        {{- include "sftp-service.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: "{{ .Values.vaultSeedJob.image.repository }}:{{ .Values.vaultSeedJob.image.tag }}"
+          imagePullPolicy: {{ .Values.vaultSeedJob.image.pullPolicy }}
+          env:
+            - name: VAULT_ADDR
+              value: {{ .Values.vault.addr | quote }}
+            - name: VAULT_TOKEN
+              value: {{ .Values.vault.token.value | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -euo pipefail
+              echo "Enabling KV v2 at path kv (ignore error if already enabled)..."
+              curl -sS -o /dev/null -w "%{http_code}\n" \
+                -X POST "$VAULT_ADDR/v1/sys/mounts/kv" \
+                -H "X-Vault-Token: $VAULT_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d '{"type":"kv","options":{"version":"2"}}' || true
+
+              echo "Writing user {{ .Values.vaultSeedJob.username }}..."
+              curl -sS -o /dev/null -w "%{http_code}\n" \
+                -X POST "$VAULT_ADDR/v1/kv/data/sftp/users/{{ .Values.vaultSeedJob.username }}" \
+                -H "X-Vault-Token: $VAULT_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d '{"data":{"username":"{{ .Values.vaultSeedJob.username }}","disabled":{{ .Values.vaultSeedJob.disabled }},"rootSubdir":"{{ .Values.vaultSeedJob.rootSubdir }}","publicKeys":["{{ .Values.vaultSeedJob.publicKey }}"]}}'
+
+              echo "Done."
+{{- end }}
+

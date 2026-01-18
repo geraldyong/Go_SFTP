@@ -1,0 +1,60 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+)
+
+type usage struct {
+	Bytes int64
+	Files int64
+}
+
+func dirUsage(root string) (usage, error) {
+	var u usage
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			// If we can't stat some file, propagate
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		u.Bytes += info.Size()
+		u.Files++
+		return nil
+	})
+	return u, err
+}
+
+// quotaWriterAt enforces total-bytes quota for the user during upload.
+// It uses: baseBytes (usage before upload) + maxEnd (largest offset+len written for this file).
+type quotaWriterAt struct {
+	f         *os.File
+	baseBytes int64
+	quota     int64
+	maxEnd    int64
+}
+
+func (w *quotaWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	end := off + int64(len(p))
+	if end > w.maxEnd {
+		w.maxEnd = end
+	}
+	if w.quota > 0 && (w.baseBytes+w.maxEnd) > w.quota {
+		return 0, fmt.Errorf("quota exceeded")
+	}
+	return w.f.WriteAt(p, off)
+}
+
+func (w *quotaWriterAt) Close() error { return w.f.Close() }
+
+var _ io.WriterAt = (*quotaWriterAt)(nil)
+var _ io.Closer = (*quotaWriterAt)(nil)
+

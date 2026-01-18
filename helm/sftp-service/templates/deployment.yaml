@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sftp-service.fullname" . }}
+  labels:
+    {{- include "sftp-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sftp-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sftp-service.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "sftp-service.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      containers:
+        - name: sftp-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - name: sftp
+              containerPort: 2022
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+
+          envFrom:
+            - configMapRef:
+                name: {{ include "sftp-service.fullname" . }}
+
+          {{- if and .Values.vault.enabled .Values.vault.token.enabled }}
+          env:
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sftp-service.fullname" . }}-vault-token
+                  key: token
+          {{- end }}
+
+          volumeMounts:
+            - name: hostkey
+              mountPath: /keys
+              readOnly: true
+
+            {{- if .Values.dataVolume.enabled }}
+            - name: data
+              mountPath: {{ .Values.dataVolume.mountPath }}
+              {{- if .Values.dataVolume.subPath }}
+              subPath: {{ .Values.dataVolume.subPath }}
+              {{- end }}
+            {{- end }}
+
+            # needed because readOnlyRootFilesystem=true
+            - name: tmp
+              mountPath: /tmp
+
+          livenessProbe:
+            tcpSocket:
+              port: sftp
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          readinessProbe:
+            tcpSocket:
+              port: sftp
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      volumes:
+        - name: hostkey
+          secret:
+            secretName: {{ include "sftp-service.hostKeySecretName" . }}
+            items:
+              - key: {{ .Values.hostKey.keyFileName }}
+                path: {{ .Values.hostKey.keyFileName }}
+
+        {{- if .Values.dataVolume.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ required "dataVolume.existingClaim must be set when dataVolume.enabled=true" .Values.dataVolume.existingClaim }}
+        {{- end }}
+
+        - name: tmp
+          emptyDir: {}
+

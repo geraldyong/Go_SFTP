@@ -1,0 +1,424 @@
+package main
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	vault "github.com/hashicorp/vault/api"
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+)
+
+type userRecord struct {
+	Username   string   `json:"username"`
+	Disabled   bool     `json:"disabled"`
+	RootSubdir string   `json:"rootSubdir"`
+	PublicKeys []string `json:"publicKeys"`
+}
+
+func getenv(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+func mustHostKeySigner(path string) ssh.Signer {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("read host key %q failed: %v", path, err)
+	}
+	s, err := ssh.ParsePrivateKey(b)
+	if err != nil {
+		log.Fatalf("parse host key %q failed: %v", path, err)
+	}
+	return s
+}
+
+// Vault KV v2 read: GET /v1/<mount>/data/<path>
+// We accept VAULT_USERS_PREFIX like: "kv/sftp/users"
+func loadUserFromVault(ctx context.Context, client *vault.Client, usersPrefix, username string) (*userRecord, error) {
+	usersPrefix = strings.Trim(usersPrefix, "/")
+	if usersPrefix == "" {
+		return nil, errors.New("VAULT_USERS_PREFIX is empty")
+	}
+
+	parts := strings.Split(usersPrefix, "/")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("VAULT_USERS_PREFIX must be like 'kv/sftp/users' (got %q)", usersPrefix)
+	}
+	mount := parts[0]                 // "kv"
+	innerPath := strings.Join(parts[1:], "/") // "sftp/users"
+
+	secretPath := fmt.Sprintf("%s/data/%s/%s", mount, innerPath, username)
+	sec, err := client.Logical().ReadWithContext(ctx, secretPath)
+	if err != nil {
+		return nil, fmt.Errorf("vault read %q failed: %w", secretPath, err)
+	}
+	if sec == nil || sec.Data == nil {
+		return nil, fmt.Errorf("user %q not found in vault at %q", username, secretPath)
+	}
+
+	// KV v2 returns: { data: { ... }, metadata: { ... } }
+	rawData, ok := sec.Data["data"]
+	if !ok {
+		return nil, fmt.Errorf("vault response missing data field at %q", secretPath)
+	}
+
+	b, err := json.Marshal(rawData)
+	if err != nil {
+		return nil, fmt.Errorf("marshal vault user data failed: %w", err)
+	}
+
+	var ur userRecord
+	if err := json.Unmarshal(b, &ur); err != nil {
+		return nil, fmt.Errorf("unmarshal vault user data failed: %w", err)
+	}
+
+	// default fields
+	if ur.Username == "" {
+		ur.Username = username
+	}
+	if ur.RootSubdir == "" {
+		ur.RootSubdir = username
+	}
+	return &ur, nil
+}
+
+func parseAuthorizedKeyLine(line string) (ssh.PublicKey, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, errors.New("empty key line")
+	}
+
+	// Accept either:
+	// 1) full authorized_keys line: "ssh-ed25519 AAAAC3... comment"
+	// 2) base64 only (rare) -> we'll reject to keep it strict
+	_, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+	if err == nil {
+		pk, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(line))
+		return pk, nil
+	}
+	return nil, err
+}
+
+func ensureUserRoot(dataRoot, username string) (string, error) {
+	// Clean username -> avoid path tricks
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", errors.New("empty username")
+	}
+	if strings.Contains(username, "..") || strings.ContainsAny(username, `/\`) {
+		return "", fmt.Errorf("invalid username %q", username)
+	}
+
+	root := filepath.Join(dataRoot, username)
+	// Create the dir if not exist
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func main() {
+	listenAddr := getenv("LISTEN_ADDR", "0.0.0.0:2022")
+	dataRoot := getenv("DATA_ROOT", "/data")
+	hostKeyPath := getenv("HOST_KEY_PATH", "/keys/ssh_host_ed25519_key")
+	vaultAddr := getenv("VAULT_ADDR", "")
+	vaultToken := getenv("VAULT_TOKEN", "")
+	usersPrefix := getenv("VAULT_USERS_PREFIX", "kv/sftp/users")
+
+	if vaultAddr == "" || vaultToken == "" {
+		log.Fatalf("VAULT_ADDR and VAULT_TOKEN must be set")
+	}
+
+	hostSigner := mustHostKeySigner(hostKeyPath)
+
+	vcfg := vault.DefaultConfig()
+	vcfg.Address = vaultAddr
+	vclient, err := vault.NewClient(vcfg)
+	if err != nil {
+		log.Fatalf("create vault client failed: %v", err)
+	}
+	vclient.SetToken(vaultToken)
+
+	serverCfg := &ssh.ServerConfig{
+		NoClientAuth: false,
+		// PublicKeyCallback is called during auth
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			username := conn.User()
+			ur, err := loadUserFromVault(ctx, vclient, usersPrefix, username)
+			if err != nil {
+				log.Printf("auth: user=%q vault error: %v", username, err)
+				return nil, fmt.Errorf("unauthorized")
+			}
+			if ur.Disabled {
+				log.Printf("auth: user=%q disabled", username)
+				return nil, fmt.Errorf("unauthorized")
+			}
+			for _, line := range ur.PublicKeys {
+				pk, err := parseAuthorizedKeyLine(line)
+				if err != nil {
+					continue
+				}
+				// constant-time compare on marshaled key bytes
+				if subtle.ConstantTimeCompare(pk.Marshal(), key.Marshal()) == 1 {
+					return &ssh.Permissions{
+						Extensions: map[string]string{
+							"username": ur.Username,
+						},
+					}, nil
+				}
+			}
+			log.Printf("auth: user=%q key mismatch", username)
+			return nil, fmt.Errorf("unauthorized")
+		},
+	}
+	serverCfg.AddHostKey(hostSigner)
+
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("listen %s failed: %v", listenAddr, err)
+	}
+	log.Printf("sftp-server listening on %s", listenAddr)
+
+	for {
+		nc, err := ln.Accept()
+		if err != nil {
+			log.Printf("accept error: %v", err)
+			continue
+		}
+		go handleConn(nc, serverCfg, vclient, usersPrefix, dataRoot)
+	}
+}
+
+func handleConn(nc net.Conn, cfg *ssh.ServerConfig, vclient *vault.Client, usersPrefix, dataRoot string) {
+	defer nc.Close()
+
+	sshConn, chans, reqs, err := ssh.NewServerConn(nc, cfg)
+	if err != nil {
+		// handshake/auth failure
+		return
+	}
+	defer sshConn.Close()
+	go ssh.DiscardRequests(reqs)
+
+	username := sshConn.User()
+	root, err := ensureUserRoot(dataRoot, username)
+	if err != nil {
+		log.Printf("user root setup failed user=%q: %v", username, err)
+		return
+	}
+
+	for newCh := range chans {
+		if newCh.ChannelType() != "session" {
+			_ = newCh.Reject(ssh.UnknownChannelType, "unknown channel type")
+			continue
+		}
+		ch, requests, err := newCh.Accept()
+		if err != nil {
+			continue
+		}
+
+		go func() {
+			defer ch.Close()
+
+			for req := range requests {
+				switch req.Type {
+				case "subsystem":
+					// Parse subsystem name
+					var payload struct{ Name string }
+					_ = ssh.Unmarshal(req.Payload, &payload)
+					if payload.Name != "sftp" {
+						_ = req.Reply(false, nil)
+						continue
+					}
+
+					_ = req.Reply(true, nil)
+
+					// Serve SFTP with root jailed at <DATA_ROOT>/<username>
+					fs := jailedFS{root: root}
+
+					handlers := sftp.Handlers{
+						FileGet:  fs,
+						FilePut:  fs,
+						FileCmd:  fs,
+						FileList: fs,
+					}
+
+					server := sftp.NewRequestServer(ch, handlers)
+					if err := server.Serve(); err != nil && !errors.Is(err, io.EOF) {
+						log.Printf("sftp serve error user=%q: %v", username, err)
+					}
+					_ = server.Close()
+					return
+
+				default:
+					_ = req.Reply(false, nil)
+				}
+			}
+		}()
+	}
+}
+
+
+// jailedFS implements SFTP request handlers rooted at a fixed directory.
+// It blocks ".." traversal and ensures all resolved paths remain under root.
+type jailedFS struct {
+	root string
+}
+
+func (fs jailedFS) clean(p string) (string, error) {
+	if p == "" {
+		p = "."
+	}
+	// SFTP uses posix-ish paths; normalize
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = strings.TrimPrefix(p, "/")
+
+	clean := filepath.Clean(p)
+
+	// Block traversal attempts
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid path")
+	}
+
+	full := filepath.Join(fs.root, clean)
+
+	// Ensure it stays under root after abs normalization
+	rootAbs, err := filepath.Abs(fs.root)
+	if err != nil {
+		return "", err
+	}
+	fullAbs, err := filepath.Abs(full)
+	if err != nil {
+		return "", err
+	}
+	if fullAbs != rootAbs && !strings.HasPrefix(fullAbs, rootAbs+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes root")
+	}
+	return fullAbs, nil
+}
+
+
+// --- FileReader interface ---
+func (fs jailedFS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
+	p, err := fs.clean(r.Filepath)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(p)
+}
+
+// --- FileWriter interface ---
+func (fs jailedFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
+	p, err := fs.clean(r.Filepath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o640)
+}
+
+// --- FileCmder interface ---
+func (fs jailedFS) Filecmd(r *sftp.Request) error {
+	p, err := fs.clean(r.Filepath)
+	if err != nil {
+		return err
+	}
+
+	switch r.Method {
+	case "Remove":
+		return os.Remove(p)
+	case "Mkdir":
+		return os.MkdirAll(p, 0o750)
+	case "Rmdir":
+		return os.Remove(p)
+	case "Rename":
+		t, err := fs.clean(r.Target)
+		if err != nil {
+			return err
+		}
+		return os.Rename(p, t)
+	default:
+		return fmt.Errorf("unsupported method: %s", r.Method)
+	}
+}
+
+// --- FileLister interface ---
+func (fs jailedFS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	p, err := fs.clean(r.Filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	switch r.Method {
+	case "List":
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return nil, err
+		}
+		infos := make([]os.FileInfo, 0, len(entries))
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			infos = append(infos, info)
+		}
+		return listerAtFromFileInfo(infos), nil
+
+	case "Stat":
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		return listerAtFromFileInfo([]os.FileInfo{info}), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported list method: %s", r.Method)
+	}
+}
+
+
+// listerAtFromFileInfo adapts []os.FileInfo to sftp.ListerAt
+type listerAtFromFileInfo []os.FileInfo
+
+func (l listerAtFromFileInfo) ListAt(ls []os.FileInfo, offset int64) (int, error) {
+	if offset >= int64(len(l)) {
+		return 0, io.EOF
+	}
+	n := copy(ls, l[offset:])
+	if n < len(ls) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+
+// Helper: allow parsing base64-only keys if you ever decide to store only the key blob.
+// (Not used by default; keeping here for completeness.)
+func parsePublicKeyFromB64(b64 string) (ssh.PublicKey, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, err
+	}
+	return ssh.ParsePublicKey(raw)
+}

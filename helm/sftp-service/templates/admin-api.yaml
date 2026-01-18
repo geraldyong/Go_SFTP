@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-admin-api
+  labels:
+    {{- include "sftp-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.adminApi.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-admin-api
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-admin-api
+        {{- include "sftp-service.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+      containers:
+        - name: admin-api
+          image: "{{ .Values.adminApi.image.repository }}:{{ .Values.adminApi.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:{{ .Values.adminApi.service.port }}"
+            - name: VAULT_ADDR
+              value: "{{ .Values.adminApi.vault.addr }}"
+            - name: VAULT_USERS_PREFIX
+              value: "{{ .Values.adminApi.vault.usersPrefix }}"
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminApi.vault.tokenSecretName }}
+                  key: VAULT_TOKEN
+          ports:
+            - name: http
+              containerPort: {{ .Values.adminApi.service.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-api
+  labels:
+    {{- include "sftp-service.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.adminApi.service.type }}
+  selector:
+    app: {{ .Release.Name }}-admin-api
+  ports:
+    - name: http
+      port: {{ .Values.adminApi.service.port }}
+      targetPort: http

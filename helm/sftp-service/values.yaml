@@ -1,0 +1,113 @@
+replicaCount: 2
+
+image:
+  repository: your-registry/sftp-server
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+service:
+  type: ClusterIP
+  port: 2022
+
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
+# If you use Prometheus Operator
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+  labels: {}
+  namespace: "" # empty = release namespace
+
+# Vault integration
+vault:
+  enabled: true
+  addr: "http://vault.vault.svc.cluster.local:8200"
+  usersPrefix: "kv/sftp/users"
+
+  # Recommended: Kubernetes auth
+  kubernetesAuth:
+    enabled: true
+    role: "sftp-service"
+    mountPath: "auth/kubernetes"  # vault auth mount path
+    # If you have Vault Agent Injector enabled, you can inject token instead, but this chart is direct auth from app.
+
+  # Dev-only: static token (NOT recommended in prod)
+  token:
+    enabled: false
+    value: "root" # override with --set or external secret in real use
+
+# Quotas default (your service should use these envs)
+quotaDefaults:
+  bytes: 1073741824    # 1 GiB
+  files: 1000
+
+# Data volume (S3-backed CSI / PVC)
+dataVolume:
+  enabled: true
+  existingClaim: ""     # if set, chart will mount this PVC
+  mountPath: /data
+  subPath: ""           # optional
+
+# Host key secret (recommended)
+hostKey:
+  existingSecret: ""    # if set, chart will mount this secret
+  create: false         # if true, chart creates a secret from inline data below
+  secretName: ""        # optional override name when create=true
+  keyFileName: ssh_host_ed25519_key
+  keyData: ""           # base64-encoded private key content (ONLY if create=true)
+
+# Optional: seed a demo user into Vault (best as a one-off job, disabled by default)
+vaultSeedJob:
+  enabled: false
+  username: "alice"
+  rootSubdir: "alice"
+  disabled: false
+  publicKey: ""  # paste public key string here (ssh-ed25519 AAAA...)
+  image:
+    repository: curlimages/curl
+    tag: "8.18.0"
+    pullPolicy: IfNotPresent
+
+# Optional availability features
+pdb:
+  enabled: true
+  minAvailable: 1
+
+hpa:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  cpu:
+    enabled: true
+    targetAverageUtilization: 70
+
