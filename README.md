@@ -36,7 +36,7 @@ docker compose ps
 
 4) Connect via SFTP (host port **2022**):
 ```bash
-sftp -P 2022 alice@127.0.0.1
+sftp -P 2022 -i dev/alice alice@127.0.0.1
 ```
 Use the matching private key from `./dev/` (for example: `./dev/alice`).
 
