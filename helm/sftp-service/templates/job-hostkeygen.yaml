@@ -1,0 +1,39 @@
+{{- if and .Values.jobs.hostkeygen.enabled .Values.storage.keys.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sftp.fullname" . }}-hostkeygen
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: hostkeygen
+          image: {{ .Values.jobs.hostkeygen.image | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              apt-get update
+              apt-get install -y --no-install-recommends openssh-client
+              rm -rf /var/lib/apt/lists/*
+              if [ ! -f /keys/ssh_host_ed25519_key ]; then
+                ssh-keygen -t ed25519 -f /keys/ssh_host_ed25519_key -N ''
+              fi
+              chown 65532:65534 /keys/ssh_host_ed25519_key /keys/ssh_host_ed25519_key.pub
+              chmod 600 /keys/ssh_host_ed25519_key
+              chmod 644 /keys/ssh_host_ed25519_key.pub
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+      volumes:
+        - name: keys
+          persistentVolumeClaim:
+            claimName: {{ include "sftp.keysPvcName" . }}
+{{- end }}
+

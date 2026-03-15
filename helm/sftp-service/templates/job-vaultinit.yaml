@@ -1,0 +1,64 @@
+{{- if and .Values.jobs.vaultinit.enabled .Values.vault.enabled .Values.seed.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sftp.fullname" . }}-vaultinit
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+spec:
+  ttlSecondsAfterFinished: 60
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: vault-init
+          image: {{ .Values.jobs.vaultinit.image | quote }}
+          env:
+            - name: VAULT_ADDR
+              value: "http://{{ include "sftp.vaultSvc" . }}:{{ .Values.vault.service.port }}"
+            - name: VAULT_TOKEN
+              value: {{ .Values.vault.devRootToken | quote }}
+          volumeMounts:
+            - name: seed
+              mountPath: /seed
+              readOnly: true
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              echo "Checking whether KV v2 exists at secret/ ..."
+              curl -sS -o /dev/null -w "%{http_code}\n" \
+                -X GET "$VAULT_ADDR/v1/sys/mounts" \
+                -H "X-Vault-Token: $VAULT_TOKEN"
+
+              echo "Writing user alice to secret/data/sftp/users/alice ..."
+              PUBKEY="$(head -n 1 /seed/alice.pub)"
+
+              cat >/tmp/alice.json <<EOF
+              {
+                "data": {
+                  "username": "alice",
+                  "disabled": false,
+                  "rootSubdir": "alice",
+                  "publicKeys": [
+                    "${PUBKEY}"
+                  ]
+                }
+              }
+              EOF
+
+              curl -sS -o /dev/null -w "%{http_code}\n" \
+                -X POST "$VAULT_ADDR/v1/secret/data/sftp/users/alice" \
+                -H "X-Vault-Token: $VAULT_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data @/tmp/alice.json
+
+              echo "Done."
+      volumes:
+        - name: seed
+          configMap:
+            name: {{ include "sftp.fullname" . }}-seed
+{{- end }}

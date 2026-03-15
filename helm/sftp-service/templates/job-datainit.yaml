@@ -1,0 +1,32 @@
+{{- if and .Values.jobs.datainit.enabled .Values.storage.data.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sftp.fullname" . }}-datainit
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: datainit
+          image: {{ .Values.jobs.datainit.image | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /data
+              chown -R 65532:65534 /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "sftp.dataPvcName" . }}
+{{- end }}
+

@@ -1,26 +1,17 @@
-SFTP Service installed.
+Installed {{ .Release.Name }} in namespace {{ .Release.Namespace }}
 
-SFTP endpoint:
-  Service: {{ include "sftp-service.fullname" . }}
-  Port:    {{ .Values.service.port }}
-
-Metrics:
-  Enabled: {{ .Values.metrics.enabled }}
-  URL:     http://<pod-ip>:{{ .Values.metrics.port }}{{ .Values.metrics.path }}
-
-Host key secret:
-  {{ include "sftp-service.hostKeySecretName" . }}
-
-Data PVC:
-  {{ .Values.dataVolume.existingClaim }}
-
-Web UI:
-  web-ui:{{ .Values.webUi.service.port }}
+SFTP service:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "sftp.fullname" . }}-sftp
 
 Admin API:
-  admin-api:{{ .Values.adminApi.service.port }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "sftp.fullname" . }}-admin-api
 
-Required secrets:
-- Admin API Vault token secret: {{ .Values.adminApi.vault.tokenSecretName }} with key "VAULT_TOKEN"
-- For production, provide hostKey via an existing secret and mount an S3-backed PVC via CSI.
-- Use Vault Kubernetes auth (recommended) rather than a static token.
+Web UI:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "sftp.fullname" . }}-web-ui
+
+Vault dev:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "sftp.vaultSvc" . }}
+
+To port-forward SFTP:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "sftp.fullname" . }}-sftp 2022:2022
+

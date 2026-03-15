@@ -1,0 +1,128 @@
+{{- if .Values.sftpServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sftp.fullname" . }}-sftp
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sftp
+spec:
+  replicas: {{ .Values.sftpServer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sftp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sftp
+  template:
+    metadata:
+      labels:
+        {{- include "sftp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: sftp
+    spec:
+      securityContext:
+        {{- toYaml .Values.sftpServer.podSecurityContext | nindent 8 }}
+
+      containers:
+        - name: sftp-server
+          image: "{{ .Values.sftpServer.image.repository }}:{{ .Values.sftpServer.image.tag }}"
+          imagePullPolicy: {{ .Values.sftpServer.image.pullPolicy }}
+
+          securityContext:
+            {{- toYaml .Values.sftpServer.containerSecurityContext | nindent 12 }}
+
+          env:
+            # mirror compose env
+            - name: LISTEN_ADDR
+              value: {{ .Values.sftpServer.env.LISTEN_ADDR | quote }}
+            - name: DATA_ROOT
+              value: {{ .Values.sftpServer.env.DATA_ROOT | quote }}
+            - name: HOST_KEY_PATH
+              value: {{ .Values.sftpServer.env.HOST_KEY_PATH | quote }}
+            - name: VAULT_USERS_PREFIX
+              value: {{ .Values.sftpServer.env.VAULT_USERS_PREFIX | quote }}
+            - name: DEFAULT_QUOTA_BYTES
+              value: {{ .Values.sftpServer.env.DEFAULT_QUOTA_BYTES | quote }}
+            - name: DEFAULT_QUOTA_FILES
+              value: {{ .Values.sftpServer.env.DEFAULT_QUOTA_FILES | quote }}
+            - name: METRICS_ADDR
+              value: {{ .Values.sftpServer.env.METRICS_ADDR | quote }}
+            - name: METRICS_PATH
+              value: {{ .Values.sftpServer.env.METRICS_PATH | quote }}
+            - name: METRICS_INCLUDE_USER
+              value: {{ .Values.sftpServer.env.METRICS_INCLUDE_USER | quote }}
+
+            {{- if .Values.vault.enabled }}
+            - name: VAULT_ADDR
+              value: "http://{{ include "sftp.vaultSvc" . }}:{{ .Values.vault.service.port }}"
+            - name: VAULT_TOKEN
+              value: {{ .Values.vault.devRootToken | quote }}
+            {{- end }}
+
+          ports:
+            - name: sftp
+              containerPort: 2022
+              protocol: TCP
+            {{- if .Values.sftpServer.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.sftpServer.metrics.port }}
+              protocol: TCP
+            {{- end }}
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+          readinessProbe:
+            tcpSocket:
+              port: sftp
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+          livenessProbe:
+            tcpSocket:
+              port: sftp
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          resources:
+            {{- toYaml .Values.sftpServer.resources | nindent 12 }}
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "sftp.dataPvcName" . }}
+        - name: keys
+          persistentVolumeClaim:
+            claimName: {{ include "sftp.keysPvcName" . }}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sftp.fullname" . }}-sftp
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sftp
+spec:
+  type: {{ .Values.sftpServer.service.type }}
+  selector:
+    {{- include "sftp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: sftp
+  ports:
+    - name: sftp
+      port: {{ .Values.sftpServer.service.port }}
+      targetPort: sftp
+      protocol: TCP
+    {{- if .Values.sftpServer.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.sftpServer.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+{{- end }}
+

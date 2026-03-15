@@ -1,46 +1,42 @@
-{{- define "sftp-service.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- define "sftp.name" -}}
+{{- default .Chart.Name .Values.global.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "sftp-service.fullname" -}}
-{{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- define "sftp.fullname" -}}
+{{- if .Values.global.fullnameOverride -}}
+{{- .Values.global.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name (include "sftp-service.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name (include "sftp.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "sftp-service.labels" -}}
-app.kubernetes.io/name: {{ include "sftp-service.name" . }}
+{{- define "sftp.labels" -}}
+app.kubernetes.io/name: {{ include "sftp.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{- define "sftp-service.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "sftp-service.name" . }}
+{{- define "sftp.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "sftp.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
-{{- define "sftp-service.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{- if .Values.serviceAccount.name -}}
-{{- .Values.serviceAccount.name -}}
+{{- define "sftp.dataPvcName" -}}
+{{- if .Values.storage.data.existingClaim -}}
+{{- .Values.storage.data.existingClaim -}}
 {{- else -}}
-{{- include "sftp-service.fullname" . -}}
-{{- end -}}
-{{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
+{{- printf "%s-data" (include "sftp.fullname" .) -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "sftp-service.hostKeySecretName" -}}
-{{- if .Values.hostKey.existingSecret -}}
-{{- .Values.hostKey.existingSecret -}}
-{{- else if and .Values.hostKey.create .Values.hostKey.secretName -}}
-{{- .Values.hostKey.secretName -}}
+{{- define "sftp.keysPvcName" -}}
+{{- if .Values.storage.keys.existingClaim -}}
+{{- .Values.storage.keys.existingClaim -}}
 {{- else -}}
-{{- printf "%s-hostkey" (include "sftp-service.fullname" .) -}}
+{{- printf "%s-keys" (include "sftp.fullname" .) -}}
 {{- end -}}
 {{- end -}}
 
+{{- define "sftp.vaultSvc" -}}
+{{- printf "%s-vault" (include "sftp.fullname" .) -}}
+{{- end -}}

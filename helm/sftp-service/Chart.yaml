@@ -1,6 +1,7 @@
 apiVersion: v2
-name: sftp-service
-description: SFTP service (Go) with Vault-backed users, per-user jail, quotas, audit logs, and Prometheus metrics
+name: go-sftp
+description: Go SFTP server with Vault-backed users, quotas, audit, metrics + optional Admin API & Web UI
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+

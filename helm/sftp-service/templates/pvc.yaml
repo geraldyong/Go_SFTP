@@ -1,0 +1,34 @@
+{{- if and .Values.storage.data.enabled (not .Values.storage.data.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "sftp.dataPvcName" . }}
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+spec:
+  accessModes: {{ toYaml .Values.storage.data.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.data.size }}
+  {{- if .Values.storage.data.storageClassName }}
+  storageClassName: {{ .Values.storage.data.storageClassName }}
+  {{- end }}
+{{- end }}
+---
+{{- if and .Values.storage.keys.enabled (not .Values.storage.keys.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "sftp.keysPvcName" . }}
+  labels:
+    {{- include "sftp.labels" . | nindent 4 }}
+spec:
+  accessModes: {{ toYaml .Values.storage.keys.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.keys.size }}
+  {{- if .Values.storage.keys.storageClassName }}
+  storageClassName: {{ .Values.storage.keys.storageClassName }}
+  {{- end }}
+{{- end }}
+

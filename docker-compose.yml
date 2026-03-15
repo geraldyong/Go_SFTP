@@ -49,7 +49,7 @@ services:
     restart: "no"
 
   # One-shot: writes a sample user record into Vault KV v2
-  # Creates: kv/sftp/users/alice  (public key in ./dev/alice.pub)
+  # Creates: secret/sftp/users/alice  (public key in ./dev/alice.pub)
   vault-init:
     image: curlimages/curl:8.18.0
     container_name: vault-init
@@ -66,7 +66,7 @@ services:
         set -e;
         echo "Enabling KV v2 at path kv (ignore error if already enabled)...";
         curl -sS -o /dev/null -w "%{http_code}\n" \
-          -X POST "$$VAULT_ADDR/v1/sys/mounts/kv" \
+          -X POST "$$VAULT_ADDR/v1/sys/mounts/secret" \
           -H "X-Vault-Token: $$VAULT_TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"type\":\"kv\",\"options\":{\"version\":\"2\"}}" || true;
@@ -74,7 +74,7 @@ services:
         echo "Writing user alice...";
         PUBKEY=$$(cat /seed/*.pub | head -n 1);
         curl -sS -o /dev/null -w "%{http_code}\n" \
-          -X POST "$$VAULT_ADDR/v1/kv/data/sftp/users/alice" \
+          -X POST "$$VAULT_ADDR/v1/secret/data/sftp/users/alice" \
           -H "X-Vault-Token: $$VAULT_TOKEN" \
           -H "Content-Type: application/json" \
           -d "{\"data\":{\"username\":\"alice\",\"disabled\":false,\"rootSubdir\":\"alice\",\"publicKeys\":[\"$${PUBKEY}\"]}}";
@@ -101,7 +101,7 @@ services:
       HOST_KEY_PATH: /keys/ssh_host_ed25519_key
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: root
-      VAULT_USERS_PREFIX: kv/sftp/users
+      VAULT_USERS_PREFIX: secret/sftp/users
       DEFAULT_QUOTA_BYTES: "10485760"    # 10 MiB
       DEFAULT_QUOTA_FILES: "50"         # 50 files
       METRICS_ADDR: 0.0.0.0:9090
@@ -126,7 +126,7 @@ services:
       LISTEN_ADDR: 0.0.0.0:8080
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: root
-      VAULT_USERS_PREFIX: kv/sftp/users
+      VAULT_USERS_PREFIX: secret/sftp/users
     ports:
       - "8080:8080"
 
