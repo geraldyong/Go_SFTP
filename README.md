@@ -15,26 +15,22 @@ It starts these containers:
 
 ## Prerequisites
 - Docker + Docker Compose
-
+- or Kubernetes (minikube)
 ---
 
 ## Quick start
 
-1) Clone the repo and start everything:
-```bash
-docker compose up -d --build
+For docker:
+```
+./rebuild.sh
 ```
 
-2) Verify containers:
-```bash
-docker compose ps
+For kubernetes:
+```
+./rebuild_k8s.sh
 ```
 
-3) A sample user is auto-created on first startup:
-- **username:** `alice`
-- **public key:** `./dev/*.pub` (first `*.pub` file found)
-
-4) Connect via SFTP (host port **2022**):
+Connect via SFTP (host port **2022**):
 ```bash
 sftp -P 2022 -i dev/alice alice@127.0.0.1
 ```
@@ -68,9 +64,14 @@ Docker volumes are used:
 - `sftp-keys`  -> SFTP **host key** (generated once and reused)
 
 To reset everything (including users and files):
+
+For docker:
 ```bash
 docker compose down -v
 ```
+
+For Kubernetes:
+kubectl delete namespace sftp
 
 ---
 
